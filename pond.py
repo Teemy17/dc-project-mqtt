@@ -3,14 +3,16 @@ Main Pond Application for Fish Haven Project
 GUI-based pond with fish spawning, animation, and migration
 """
 
-import tkinter as tk
-from tkinter import ttk, scrolledtext, messagebox
+import base64
 import threading
 import time
+import tkinter as tk
 from datetime import datetime
-from PIL import Image, ImageTk
-import base64
 from io import BytesIO
+from tkinter import messagebox, scrolledtext, ttk
+
+from PIL import Image, ImageTk
+from prometheus_client import Counter, Gauge, start_http_server
 
 import config
 from fish import Fish
@@ -20,6 +22,20 @@ from mqtt_handler import MQTTHandler
 POND_WIDTH = config.POND_WIDTH
 POND_HEIGHT = config.POND_HEIGHT
 POND_COLOR = config.POND_COLOR
+
+
+# Prometheus Metrics
+ACTIVE_FISH_GAUGE = Gauge(
+    "fishhaven_active_fishes", "Current number of fishes in the pond"
+)
+SPAWN_COUNTER = Counter("fishhaven_spawned_total", "Total fishes spawned locally")
+MIGRATE_OUT_COUNTER = Counter(
+    "fishhaven_migrated_out_total", "Total fishes sent to stream"
+)
+MIGRATE_IN_COUNTER = Counter(
+    "fishhaven_migrated_in_total", "Total fishes received from stream"
+)
+DEATH_COUNTER = Counter("fishhaven_deaths_total", "Total fishes died of old age")
 
 
 class PondGUI:
@@ -44,6 +60,10 @@ class PondGUI:
 
         # Initialize MQTT
         self._init_mqtt()
+
+        # Start Prometheus metrics server on port 8000
+        start_http_server(8000)
+        self.log_message("Prometheus metrics server started on port 8000", "SYSTEM")
 
     def _create_ui(self):
         """Create the user interface"""
@@ -264,6 +284,9 @@ class PondGUI:
         self.fishes.append(fish)
         self.stats["spawned"] += 1
         self.log_message(f"Spawned new fish: {fish.name}", "FISH")
+        SPAWN_COUNTER.inc()  # Increment Prometheus counter
+        ACTIVE_FISH_GAUGE.inc()  # Update Prometheus gauge
+        ACTIVE_FISH_GAUGE.set(len(self.fishes))  # Set gauge to current fish count
 
     def spawn_fish_manual(self):
         """Manually spawn a fish"""
@@ -292,6 +315,9 @@ class PondGUI:
             self.fishes.append(fish)
             self.stats["received"] += 1
             self.log_message(f"Received fish '{fish.name}' from {from_pond}", "FISH")
+            MIGRATE_IN_COUNTER.inc()  # Increment Prometheus counter
+            ACTIVE_FISH_GAUGE.set(len(self.fishes))  # Update Prometheus gauge
+            ACTIVE_FISH_GAUGE.inc()  # Increment for received fish
         except Exception as e:
             self.log_message(f"Error receiving fish: {e}", "ERROR")
 
@@ -302,6 +328,9 @@ class PondGUI:
             self.mqtt_handler.send_fish(fish, target_pond=None)
             self.stats["sent"] += 1
             self.log_message(f"Migrated fish '{fish.name}'", "FISH")
+            ACTIVE_FISH_GAUGE.set(len(self.fishes))  # Update Prometheus gauge
+            ACTIVE_FISH_GAUGE.dec()  # Decrement for migrated fish
+            MIGRATE_OUT_COUNTER.inc()  # Increment migration out counter
 
     def send_hello(self):
         """Send hello message"""
