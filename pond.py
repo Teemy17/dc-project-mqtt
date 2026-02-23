@@ -36,6 +36,15 @@ MIGRATE_IN_COUNTER = Counter(
     "fishhaven_migrated_in_total", "Total fishes received from stream"
 )
 DEATH_COUNTER = Counter("fishhaven_deaths_total", "Total fishes died of old age")
+REJECTED_FISH_COUNTER = Counter(
+    "fishhaven_rejected_fish_total", "Total fishes rejected due to pond at capacity"
+)
+MQTT_RECONNECT_COUNTER = Counter(
+    "fishhaven_mqtt_reconnects_total", "Total MQTT reconnection attempts"
+)
+MQTT_CONNECTED_GAUGE = Gauge(
+    "fishhaven_mqtt_connected", "MQTT connection status (1=connected, 0=disconnected)"
+)
 
 
 class PondGUI:
@@ -169,10 +178,12 @@ class PondGUI:
         """Check and update MQTT connection status"""
         if self.mqtt_handler and self.mqtt_handler.connected:
             self.connection_label.config(text="Status: Connected ✓", foreground="green")
+            MQTT_CONNECTED_GAUGE.set(1)
         else:
             self.connection_label.config(
                 text="Status: Disconnected ✗", foreground="red"
             )
+            MQTT_CONNECTED_GAUGE.set(0)
 
         # Check again in 2 seconds
         self.root.after(2000, self._check_mqtt_connection)
@@ -294,6 +305,7 @@ class PondGUI:
             self.spawn_fish()
         else:
             self.log_message("Cannot spawn fish: Maximum limit (10) reached", "WARNING")
+            REJECTED_FISH_COUNTER.inc()
 
     def receive_fish(self, fish_data, from_pond):
         """Receive a fish from another pond"""
@@ -306,8 +318,9 @@ class PondGUI:
             # Check if pond is at maximum capacity
             if len(self.fishes) >= 10:
                 self.log_message(
-                    f"Cannot receive fish: Maximum limit (10) reached", "WARNING"
+                    "Cannot receive fish: Maximum limit (10) reached", "WARNING"
                 )
+                REJECTED_FISH_COUNTER.inc()
                 return
 
             fish = Fish.from_dict(fish_data)
@@ -411,7 +424,7 @@ class PondGUI:
                 tags=f"bar_fill_{fish.fish_id}",
             )
 
-        except Exception as e:
+        except Exception:
             # Fallback: draw simple circle
             self.canvas.create_oval(
                 fish.x - 15,

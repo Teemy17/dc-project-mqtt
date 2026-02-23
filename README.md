@@ -396,6 +396,163 @@ Suggested team colors (fins auto-darken):
 ✅ Any Python implementation  
 ✅ Any language that speaks MQTT + JSON
 
+## 🔥 Item 4 – Overload & Crash Testing
+
+This section documents the **testing procedure for overloads and crashes** and explains how to observe the results using Prometheus metrics.
+
+### Observability Metrics Added
+
+| Metric | Type | Description |
+|---|---|---|
+| `fishhaven_active_fishes` | Gauge | Current fish count in pond |
+| `fishhaven_spawned_total` | Counter | Total fish spawned locally |
+| `fishhaven_migrated_in_total` | Counter | Fish received from other ponds |
+| `fishhaven_migrated_out_total` | Counter | Fish sent to other ponds |
+| `fishhaven_deaths_total` | Counter | Fish that died of old age |
+| `fishhaven_rejected_fish_total` | Counter | Fish rejected (pond at capacity) |
+| `fishhaven_mqtt_connected` | Gauge | MQTT connection status (1=up, 0=down) |
+| `stress_messages_sent_total` | Counter | Messages sent by stress tester |
+| `stress_messages_failed_total` | Counter | Failed publish attempts |
+| `stress_publish_latency_seconds` | Histogram | Per-message publish latency |
+| `stress_broker_up` | Gauge | Broker reachability (1=up, 0=down) |
+| `stress_test_phase` | Gauge | Current test phase (0=idle, 1=flood, 2=overload, 3=crash) |
+
+All pond metrics are available at **http://localhost:8000/metrics**  
+Stress-test metrics are available at **http://localhost:8001/metrics**
+
+---
+
+### Setup: Start Everything
+
+```bash
+# Terminal 1 – Start MQTT broker
+docker-compose up -d
+
+# Terminal 2 – Start the pond (exposes metrics on :8000)
+uv run pond.py --pond-name "TestPond" --group-name "TestTeam"
+# Click "Start Pond" in the GUI
+
+# Terminal 3 – Run the stress test (exposes metrics on :8001)
+uv run stress_test.py --test all
+```
+
+---
+
+### Test 1 – Message Flood
+
+**Purpose**: Verify the MQTT broker handles a burst of 100 fish messages without data loss.
+
+**What it does**: Sends 100 fish messages at ~20 messages/second.
+
+**Command**:
+```bash
+uv run stress_test.py --test flood
+```
+
+**Expected outcome**:
+- `stress_messages_sent_total` counter rises by 100
+- `stress_publish_latency_seconds` histogram stays in the 1–10 ms range
+- `stress_messages_failed_total` stays at 0
+
+**What to look for in Prometheus/Grafana**:
+- Sharp rising edge on `stress_messages_sent_total` (flood spike)
+- Latency histogram showing 99th percentile under 100 ms
+
+---
+
+### Test 2 – Capacity Overload
+
+**Purpose**: Verify the pond enforces the 10-fish limit and records all rejections.
+
+**What it does**: Publishes 10 + 30 = 40 fish messages. Pond accepts the first 10, rejects the rest.
+
+**Command**:
+```bash
+uv run stress_test.py --test overload
+```
+
+**Expected outcome**:
+- `fishhaven_active_fishes` plateaus at **10** (never exceeds limit)
+- `fishhaven_rejected_fish_total` climbs to **~30**
+- Pond GUI message log shows `WARNING: Cannot receive fish: Maximum limit (10) reached`
+
+**What to look for in Prometheus/Grafana**:
+- `fishhaven_active_fishes` flat line at 10 despite continuous inflow
+- Rising `fishhaven_rejected_fish_total` during the overload window
+
+---
+
+### Test 3 – Broker Crash & Recovery
+
+**Purpose**: Verify the system detects a broker outage and recovers automatically.
+
+**What it does**:
+1. Sends 5 normal messages (Phase A)
+2. Stops the MQTT broker container (Phase B — simulated crash)
+3. Attempts 5 more publishes — all should fail
+4. Restarts the broker (Phase C)
+5. Waits for paho auto-reconnect, then sends 5 recovery messages
+
+**Command**:
+```bash
+uv run stress_test.py --test crash
+```
+
+**Expected outcome**:
+- Phase B: `fishhaven_mqtt_connected` drops to **0**, `stress_broker_up` drops to **0**
+- Phase B: `stress_messages_failed_total` increments for each failed publish
+- Phase C: `fishhaven_mqtt_connected` returns to **1** after auto-reconnect
+- Phase C: 5 post-recovery messages delivered successfully
+
+**What to look for in Prometheus/Grafana**:
+- `fishhaven_mqtt_connected` — dip to 0 then return to 1 (visible crash + recovery)
+- `stress_broker_up` — matching dip
+- `stress_messages_failed_total` — spike during outage window only
+
+---
+
+### Individual Test Commands
+
+```bash
+# Run all three tests back-to-back
+uv run stress_test.py --test all
+
+# Run only the flood test
+uv run stress_test.py --test flood
+
+# Run only the capacity overload test
+uv run stress_test.py --test overload
+
+# Run only the crash/recovery test (requires Docker)
+uv run stress_test.py --test crash
+```
+
+---
+
+### Prometheus Query Examples (for screenshots)
+
+```promql
+# Fish count over time
+fishhaven_active_fishes
+
+# Rejection rate (per minute)
+rate(fishhaven_rejected_fish_total[1m])
+
+# Message flood rate (per second)
+rate(stress_messages_sent_total[10s])
+
+# Publish latency 99th percentile
+histogram_quantile(0.99, rate(stress_publish_latency_seconds_bucket[1m]))
+
+# MQTT connection status (crash/recovery visibility)
+fishhaven_mqtt_connected
+
+# Error rate during crash
+rate(stress_messages_failed_total[30s])
+```
+
+---
+
 ## 🤝 Contributing
 
 This is a course project for **DC25 @ KMITL**.

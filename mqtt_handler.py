@@ -5,7 +5,6 @@ Handles all MQTT communication between ponds
 
 import paho.mqtt.client as mqtt
 import json
-import threading
 from datetime import datetime
 
 
@@ -47,7 +46,10 @@ class MQTTHandler:
         """Callback when connected to MQTT broker"""
         if rc == 0:
             print(f"✓ Connected to MQTT broker at {self.broker}:{self.port}")
+            was_reconnect = self.connected is False and getattr(self, "reconnect_count", 0) > 0
             self.connected = True
+            if was_reconnect:
+                print(f"✓ Reconnected successfully (attempt #{self.reconnect_count})")
 
             # Subscribe to stream topic (for fish migration and messages)
             from config import TOPIC_STREAM
@@ -66,6 +68,10 @@ class MQTTHandler:
         """Callback when disconnected from MQTT broker"""
         print(f"✗ Disconnected from MQTT broker (code: {rc})")
         self.connected = False
+        if rc != 0:
+            # Unexpected disconnect — paho will auto-reconnect; count the attempt
+            print("⟳ Unexpected disconnect, paho-mqtt will attempt auto-reconnect...")
+            self.reconnect_count = getattr(self, "reconnect_count", 0) + 1
 
     def _on_message(self, client, userdata, msg):
         """Callback when message is received"""
