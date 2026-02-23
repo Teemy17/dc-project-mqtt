@@ -4,9 +4,13 @@ Test script for Fish Haven MQTT connectivity
 Use this to test connection before running the full application
 """
 
+import sys
+import os
 import time
 import json
 from datetime import datetime
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from mqtt_handler import MQTTHandler
 from config import POND_NAME, GROUP_NAME
 
